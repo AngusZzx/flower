@@ -1765,7 +1765,7 @@ function endPointer(e) {
     const isSwipe = Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.15;  // 横滑 → 换花
     if (isTap) {
       triggerBloom();
-    } else if (isSwipe && bloomState === 'bloomed') {   // 花苞绽放前不切换花型
+    } else if (isSwipe && bloomState !== 'bursting' && bloomState !== 'closing') {   // 动画中不换花型
       changeStyle(dx < 0 ? 1 : -1);
     }
     startPt = null;
@@ -1869,7 +1869,7 @@ function updateHint() {
   const el = $('hint');
   if (!el) return;
   el.textContent = (bloomState === 'bloomed' || bloomState === 'bursting')
-    ? '轻点花朵 · 左右滑动换花 · 摇一摇撒花瓣'
+    ? '轻点收回花苞 · 左右滑动换花 · 摇一摇撒花瓣'
     : '👆 轻点花苞，让它为你开花';
 }
 
@@ -1883,10 +1883,12 @@ function startBurst() {
 function triggerBloom() {
   if (bloomState === 'bursting' || bloomState === 'closing') return;   // 动画中防抖
   if (bloomState === 'bud') {
-    startBurst();
+    startBurst();                       // 花苞 → 炸开 → 盛开
   } else if (bloomState === 'bloomed') {
-    bloomState = 'closing';             // 先收回成花苞，再炸开重放一次
+    bloomState = 'closing';             // 盛开 → 收回花苞（停在花苞，不自动重放）
     bloomT = 0;
+    burstLevel = Math.max(burstLevel, 0.45);   // 花瓣轻轻一散，收回更自然
+    updateHint();
   }
 }
 
@@ -1899,10 +1901,10 @@ function updateBloomAnim(dt) {
     if (k >= 1) { bloomState = 'bloomed'; budOpacity = 0; flowerOpacity = 1; updateHint(); }
   } else if (bloomState === 'closing') {
     bloomT += dt;
-    const k = clamp(bloomT / 0.40);
+    const k = clamp(bloomT / 0.42);
     budOpacity = k;                                  // 花朵收回成花苞
     flowerOpacity = 1 - k;
-    if (k >= 1) { bloomState = 'bud'; budOpacity = 1; flowerOpacity = 0; startBurst(); }
+    if (k >= 1) { bloomState = 'bud'; budOpacity = 1; flowerOpacity = 0; updateHint(); }
   }
 }
 
