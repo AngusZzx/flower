@@ -29,15 +29,26 @@ html,body{width:100%;height:100%;overflow:hidden;overscroll-behavior:none;backgr
 .err-s{color:#9aa1ad;font-size:12.5px;letter-spacing:.5px}
 .err-s b{color:#ffd6de;font-weight:600}
 
-/* ---------- 花瓣飘落 ---------- */
-.petal{position:fixed;top:-6vh;z-index:15;pointer-events:none;
-  border-radius:62% 6% 62% 6%;will-change:transform,opacity;
-  animation-name:petalFall;animation-timing-function:cubic-bezier(.35,.1,.65,.9);
-  animation-fill-mode:forwards;box-shadow:0 0 6px rgba(255,140,170,.35)}
+/* ---------- 花瓣飘落（摇曳 + 翻滚 + 层次化节奏） ---------- */
+.petal{position:fixed;top:-9vh;z-index:15;pointer-events:none;
+  border-radius:64% 6% 64% 6%;will-change:transform,opacity;
+  animation-name:petalFall;animation-timing-function:linear;
+  animation-fill-mode:forwards;box-shadow:0 0 7px rgba(255,140,170,.45)}
 @keyframes petalFall{
-  0%{transform:translate3d(0,0,0) rotate(0deg);opacity:0}
-  10%{opacity:.92}
-  100%{transform:translate3d(var(--dx),112vh,0) rotate(var(--rot));opacity:.1}
+  0%  {transform:translate3d(0,0,0) rotate(0deg) scale(.55,1);opacity:0;
+       animation-timing-function:cubic-bezier(.45,0,.75,1)}
+  6%  {opacity:.96;animation-timing-function:cubic-bezier(.35,.2,.7,1)}
+  16% {transform:translate3d(var(--w1),15vh,0) rotate(calc(var(--rot)*.15)) scale(.35,1.06);
+       animation-timing-function:cubic-bezier(.5,0,.65,1)}
+  32% {transform:translate3d(var(--w2),31vh,0) rotate(calc(var(--rot)*.33)) scale(-.92,1);
+       animation-timing-function:cubic-bezier(.3,.3,.75,1)}
+  48% {transform:translate3d(var(--w3),48vh,0) rotate(calc(var(--rot)*.51)) scale(-.28,1.05);
+       animation-timing-function:cubic-bezier(.55,0,.6,1)}
+  64% {transform:translate3d(var(--w4),65vh,0) rotate(calc(var(--rot)*.69)) scale(.95,.97);
+       animation-timing-function:cubic-bezier(.35,.25,.7,1)}
+  80% {transform:translate3d(var(--w5),83vh,0) rotate(calc(var(--rot)*.85)) scale(.4,1.03);
+       animation-timing-function:cubic-bezier(.45,.1,.75,1)}
+  100%{transform:translate3d(var(--dx),118vh,0) rotate(var(--rot)) scale(-.85,.98);opacity:.04}
 }
 
 /* ---------- 顶部：配色 ---------- */
@@ -141,7 +152,7 @@ body.idle #topbar,body.idle #bottombar,body.idle #letter-btn,body.idle #petal-bt
 </header>
 
 <footer id="bottombar">
-  <div id="hint">轻点花朵 · 左右滑动换花 · 摇一摇撒花瓣</div>
+  <div id="hint">👆 轻点花苞，让它为你开花</div>
   <div id="style-name">💐 Rose Bouquet</div>
   <div id="style-dots"></div>
 </footer>
@@ -848,8 +859,13 @@ const PARAMS = {
   codeVisible: false
 };
 
-// 粒子爆散强度：0 = 完整花朵；>0 = 粒子沿径向外扩（点击/开场聚合用）
-let burstLevel = 0;
+// ---- 交互状态（必须早于 renderAt(0) 声明）----
+let burstLevel = 0;      // 粒子爆散强度：0 = 完整；>0 = 沿径向外扩
+let budGeometry = null;  // 花苞几何（首次绽放前显示）
+let budOpacity = 1;      // 花苞不透明度
+let flowerOpacity = 0;   // 花朵不透明度
+let bloomState = 'bud';  // bud | bursting | bloomed | closing
+let bloomT = 0;
 const canvas = document.getElementById('canvas');
 const gl = canvas.getContext('webgl2', {
   alpha: false, antialias: false, preserveDrawingBuffer: true, depth: false
@@ -1244,7 +1260,7 @@ layout(location=0) in vec3 aPosition;
 layout(location=1) in vec3 aColour;
 layout(location=2) in vec4 aData;
 
-uniform float uTime, uYaw, uPitch, uDistance, uAspect, uScale, uFlow, uPeriod, uXOffset, uBurst;
+uniform float uTime, uYaw, uPitch, uDistance, uAspect, uScale, uFlow, uPeriod, uXOffset, uBurst, uOpacity;
 uniform int uBox;
 uniform vec3 uThemeCore, uThemeMid, uThemeRim, uThemeSepal, uThemeRibbon, uThemeBox;
 
@@ -1307,7 +1323,7 @@ void main() {
 
   vec3 baseColor = uBox == 1 ? uThemeBox : getThemeColor(aColour);
   vColour = baseColor * (uBox == 1 ? 1.0 : light);
-  vOpacity = aData.x * (uBox == 1 ? 1.0 : (0.42 + 0.58 * smoothstep(-1.1, 1.1, p.z)));
+  vOpacity = aData.x * uOpacity * (uBox == 1 ? 1.0 : (0.42 + 0.58 * smoothstep(-1.1, 1.1, p.z)));
 }`;
 
 const pointFragment = `#version 300 es
@@ -1455,7 +1471,7 @@ function resize(w, h) {
   blurB = target(blurA.w, blurA.h);
 }
 
-function geometry(p, g, mode, t, isBox) {
+function geometry(p, g, mode, t, isBox, op = 1) {
   gl.useProgram(p);
   gl.bindVertexArray(g.vao);
   const angle = (PARAMS.spin ? t * TAU / PARAMS.duration : 0) + PARAMS.manualYaw + 0.25;
@@ -1484,6 +1500,7 @@ function geometry(p, g, mode, t, isBox) {
   uniform(p, 'uFlow', PARAMS.flow);
   uniform(p, 'uXOffset', xOffset);
   uniform(p, 'uBurst', burstLevel);
+  uniform(p, 'uOpacity', op);
   gl.uniform1i(loc(p, 'uBox'), isBox ? 1 : 0);
 
   gl.uniform3fv(loc(p, 'uThemeCore'), curColors.core);
@@ -1523,8 +1540,13 @@ function renderAt(t) {
     geometry(linesProgram, boxGeometry, gl.LINES, t, true);
     geometry(pointsProgram, boxDotsGeometry, gl.POINTS, t, true);
   }
-  geometry(pointsProgram, pointGeometry, gl.POINTS, t, false);
-  geometry(linesProgram, threadGeometry, gl.LINES, t, false);
+  if (flowerOpacity > 0.002) {
+    geometry(pointsProgram, pointGeometry, gl.POINTS, t, false, flowerOpacity);
+    geometry(linesProgram, threadGeometry, gl.LINES, t, false, flowerOpacity);
+  }
+  if (budGeometry && budOpacity > 0.002) {
+    geometry(pointsProgram, budGeometry, gl.POINTS, t, false, budOpacity);
+  }
 
   gl.disable(gl.BLEND);
   gl.bindVertexArray(quadVAO);
@@ -1556,6 +1578,7 @@ function tick(now) {
     burstLevel *= Math.pow(0.0009, dt);
     if (burstLevel < 0.0006) burstLevel = 0;
   }
+  updateBloomAnim(dt);
   renderAt(clock);
   if (running) raf = requestAnimationFrame(tick);
 }
@@ -1627,24 +1650,43 @@ STYLE_KEYS.forEach(() => {
 
 /* ---------- 花瓣飘落 ---------- */
 function spawnPetals(n) {
-  const color = THEMES[currentThemeKey].dot;
+  const theme = THEMES[currentThemeKey];
   for (let i = 0; i < n; i++) {
     const p = document.createElement('div');
     p.className = 'petal';
-    const w = 7 + Math.random() * 11;
+
+    // 尺寸形态：小瓣轻飘、大瓣稳重
+    const w = 7 + Math.random() * 13;
     p.style.width = w.toFixed(1) + 'px';
-    p.style.height = (w * 1.06).toFixed(1) + 'px';
-    p.style.left = (Math.random() * 100).toFixed(1) + 'vw';
-    p.style.setProperty('--dx', (Math.random() * 180 - 90).toFixed(0) + 'px');
-    p.style.setProperty('--rot', (Math.random() * 960 - 480).toFixed(0) + 'deg');
-    p.style.animationDuration = (5.2 + Math.random() * 3.6).toFixed(2) + 's';
-    p.style.animationDelay = (Math.random() * 0.8).toFixed(2) + 's';
-    p.style.background = 'radial-gradient(circle at 32% 28%, rgba(255,255,255,.9), rgba(255,255,255,0) 62%), ' + color;
+    p.style.height = (w * (1.02 + Math.random() * 0.16)).toFixed(1) + 'px';
+
+    // 起点铺满整幅宽度，避免"排成一条线"落下
+    p.style.left = (Math.random() * 104 - 2).toFixed(1) + 'vw';
+
+    // 摇曳轨迹：左右交替摆幅（用 vw 保证不同屏宽观感一致）
+    const amp = 3 + Math.random() * 10;
+    const dir = Math.random() < 0.5 ? -1 : 1;
+    [0.50, -0.85, 1.05, -0.72, 0.42].forEach((f, k) =>
+      p.style.setProperty('--w' + (k + 1), (dir * amp * f).toFixed(2) + 'vw'));
+    p.style.setProperty('--dx', (dir * amp * 0.75).toFixed(2) + 'vw');
+
+    // 翻滚：随机圈数 + 随机方向
+    const spin = (1.2 + Math.random() * 2.6) * (Math.random() < 0.5 ? -1 : 1);
+    p.style.setProperty('--rot', (spin * 360).toFixed(0) + 'deg');
+
+    // 时长与延迟拉开层次，避免齐刷刷同时落地
+    p.style.animationDuration = (5.0 + Math.random() * 4.6).toFixed(2) + 's';
+    p.style.animationDelay = (Math.random() * 1.4).toFixed(2) + 's';
+
+    // 花色微差：约三成偏白，避免一片死板的同色
+    const fill = Math.random() > 0.72 ? 'rgba(255,255,255,.92)' : theme.dot;
+    p.style.background = 'radial-gradient(circle at 32% 28%, rgba(255,255,255,.95), rgba(255,255,255,0) 62%), ' + fill;
+
     document.body.appendChild(p);
-    setTimeout(() => { if (p.parentNode) p.remove(); }, 11000);
+    setTimeout(() => { if (p.parentNode) p.remove(); }, 12500);
   }
 }
-setInterval(() => { if (introDone && !document.hidden) spawnPetals(2); }, 9000);
+setInterval(() => { if (introDone && !document.hidden) spawnPetals(3); }, 9000);
 
 /* ---------- 摇一摇 → 花瓣飘落 ---------- */
 let motionBound = false, lastShake = 0;
@@ -1655,7 +1697,7 @@ function onShake(e) {
   const now = performance.now();
   if (mag > 17.5 && now - lastShake > 1100) {
     lastShake = now;
-    spawnPetals(20);
+    spawnPetals(26);
     wakeUI();
   }
 }
@@ -1719,11 +1761,11 @@ function endPointer(e) {
   if (pts.size === 0 && startPt) {
     const dx = e.clientX - startPt.x, dy = e.clientY - startPt.y;
     const dt = performance.now() - startT;
-    const isTap = maxMove < 15 && dt < 450;                       // 轻点 → 粒子爆散
+    const isTap = maxMove < 15 && dt < 450;                       // 轻点 → 花苞绽放
     const isSwipe = Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.15;  // 横滑 → 换花
     if (isTap) {
-      burstLevel = Math.min(1.25, burstLevel + 0.9);
-    } else if (isSwipe) {
+      triggerBloom();
+    } else if (isSwipe && bloomState === 'bloomed') {   // 花苞绽放前不切换花型
       changeStyle(dx < 0 ? 1 : -1);
     }
     startPt = null;
@@ -1736,6 +1778,133 @@ canvas.addEventListener('wheel', e => {                 // 桌面滚轮缩放
   e.preventDefault();
   PARAMS.cameraDistance = clamp(PARAMS.cameraDistance + e.deltaY * 0.003, 4.2, 13.5);
 }, { passive: false });
+
+/* ---------- 花苞几何（独立生成，绝不触碰原花型代码） ---------- */
+function generateBudGeometry() {
+  const particles = [];
+  const savedRng = rng;
+  rng = 20241013;                          // 独立随机种子
+
+  const BASE = -0.58, TIP = 1.26, H = TIP - BASE;
+  const RMAX = 0.375;
+  // 水滴形轮廓：底部收窄 → 中段饱满 → 顶部收尖
+  const profile = s => {
+    s = clamp(s, 0.0005, 0.9995);
+    return RMAX * Math.pow(s, 0.34) * Math.pow(1 - s, 0.72) / 0.5144;
+  };
+  const pb = { phase: 0.9 };
+
+  // 1) 抱合的花瓣：按「曲面」采样；层间错角 + 位置抖动，避免出现规则条纹
+  const LAYERS = 5;
+  const petalsPer = [6, 7, 8, 9, 10];
+  const NU = 32, NV = 32;
+  for (let L = 0; L < LAYERS; L++) {
+    const t = L / (LAYERS - 1);                       // 0 = 最外层, 1 = 最内层
+    const np = petalsPer[L];
+    const s0 = 0.02 + 0.46 * Math.pow(t, 1.35);
+    const s1 = 0.985 - 0.05 * t;
+    const rScale = 1 - 0.46 * Math.pow(t, 1.10);
+    const dth = (TAU / np) * 0.68;                    // 半宽 > 半间距 → 相邻重叠无缝隙
+    const layerIdx = Math.min(4, Math.round(t * 4));
+    for (let k = 0; k < np; k++) {
+      const ac = k * TAU / np + L * 1.25 + 0.3;
+      for (let i = 0; i < NU; i++) {
+        const u = i / (NU - 1);
+        const s = s0 + (s1 - s0) * u;
+        const prof = profile(s) * rScale;
+        for (let jj = 0; jj < NV; jj++) {
+          const v = (jj / (NV - 1)) * 2 - 1;          // -1 .. 1，花瓣横向位置
+          // —— 位置抖动：打散「一圈一圈」的规则感 ——
+          const js = s + (rand() - 0.5) * 0.010;
+          const ja = ac + dth * v + 0.16 * u + (rand() - 0.5) * 0.055;
+          const jr = 1 + (rand() - 0.5) * 0.030;
+          const rr = profile(clamp(js, 0.0005, 0.9995)) * rScale
+                     * (1 - 0.30 * v * v) * jr;
+          let col = petalColour(layerIdx, k, clamp(v * 1.15, -1, 1),
+                                Math.min(1, s * 0.96), pb);
+          if (s > 0.80) col = lerpc(col, [0.30, 0.045, 0.075], smooth(0.80, 1, s) * 0.62);
+          vertex(particles,
+                 [Math.cos(ja) * rr, BASE + H * js, Math.sin(ja) * rr],
+                 col, 0.68 + 0.22 * Math.sin(u * 3.0 + k * 1.7),
+                 1.0 + 0.5 * (1 - s), 1.0,
+                 (L * 0.21 + k * 0.13 + u) % 1);
+        }
+      }
+    }
+  }
+
+  // 2) 花萼：5 片绿色萼片，从茎基部向上「抱合」花苞下段（绿色会被识别为叶片）
+  for (let k = 0; k < 5; k++) {
+    const a0 = k * TAU / 5 + 0.3;
+    for (let i = 0; i < 700; i++) {
+      const u = i / 699;
+      const y = BASE - 0.28 + 0.72 * u;               // 从茎基部 → 花苞下段
+      const sb = clamp((y - BASE) / H, 0.0005, 0.9995);
+      const flare = 1.12 + 0.24 * Math.pow(u, 3);     // 尖端微微外翻
+      const r = profile(sb) * flare + 0.05;
+      const ang = a0 + 0.26 * Math.sin(u * 2.4) + (rand() - 0.5) * 0.05;
+      const col = lerpc([0.20, 0.42, 0.16], [0.55, 0.86, 0.38], 0.30 + 0.70 * u);
+      vertex(particles, [Math.cos(ang) * r, y, Math.sin(ang) * r],
+             col, 0.88, 1.0, 1.0, 0.5 + u * 0.4);
+    }
+  }
+
+  // 3) 花茎
+  for (let i = 0; i < 460; i++) {
+    const u = i / 459;
+    const y = BASE - 0.28 - 0.66 * u;
+    const r = 0.040 * (1 - 0.42 * u);
+    const ang = u * 9.0;
+    const col = lerpc([0.16, 0.34, 0.13], [0.42, 0.68, 0.30], u);
+    vertex(particles, [Math.cos(ang) * r, y, Math.sin(ang) * r],
+           col, 0.85, 0.95, 1.0, u * 0.6);
+  }
+
+  rng = savedRng;
+  return upload(particles);
+}
+
+/* ---------- 花苞 → 炸开 → 盛开 状态机 ---------- */
+function updateHint() {
+  const el = $('hint');
+  if (!el) return;
+  el.textContent = (bloomState === 'bloomed' || bloomState === 'bursting')
+    ? '轻点花朵 · 左右滑动换花 · 摇一摇撒花瓣'
+    : '👆 轻点花苞，让它为你开花';
+}
+
+function startBurst() {
+  bloomState = 'bursting';
+  bloomT = 0;
+  burstLevel = 1.45;                    // 花苞粒子向外炸开
+  updateHint();
+}
+
+function triggerBloom() {
+  if (bloomState === 'bursting' || bloomState === 'closing') return;   // 动画中防抖
+  if (bloomState === 'bud') {
+    startBurst();
+  } else if (bloomState === 'bloomed') {
+    bloomState = 'closing';             // 先收回成花苞，再炸开重放一次
+    bloomT = 0;
+  }
+}
+
+function updateBloomAnim(dt) {
+  if (bloomState === 'bursting') {
+    bloomT += dt;
+    const k = clamp(bloomT / 0.62);
+    budOpacity = Math.max(0, 1 - k * 1.85);          // 花苞粒子迅速散去
+    flowerOpacity = clamp((k - 0.12) / 0.70);        // 花朵随之聚合浮现
+    if (k >= 1) { bloomState = 'bloomed'; budOpacity = 0; flowerOpacity = 1; updateHint(); }
+  } else if (bloomState === 'closing') {
+    bloomT += dt;
+    const k = clamp(bloomT / 0.40);
+    budOpacity = k;                                  // 花朵收回成花苞
+    flowerOpacity = 1 - k;
+    if (k >= 1) { bloomState = 'bud'; budOpacity = 1; flowerOpacity = 0; startBurst(); }
+  }
+}
 
 /* ---------- 开场 & 情书 ---------- */
 const letterTimers = [];
@@ -1758,7 +1927,7 @@ $('letter').addEventListener('click', hideLetter);
 function enterExperience() {
   if (introDone) return;
   introDone = true;
-  burstLevel = 1.45;                     // 漫天星点聚合成花，作为揭幕
+  burstLevel = 1.45;                     // 漫天星点聚合成「花苞」，等待她轻点绽放
   const intro = $('intro');
   intro.classList.add('gone');
   setTimeout(() => { if (intro.parentNode) intro.remove(); }, 1400);
@@ -1770,7 +1939,7 @@ function enterExperience() {
 $('intro').addEventListener('click', enterExperience);
 
 $('letter-btn').addEventListener('click', e => { e.stopPropagation(); showLetter(); wakeUI(); });
-$('petal-btn').addEventListener('click', e => { e.stopPropagation(); spawnPetals(22); wakeUI(); });
+$('petal-btn').addEventListener('click', e => { e.stopPropagation(); spawnPetals(30); wakeUI(); });
 
 /* ---------- 桌面端快捷键（方便预览调试） ---------- */
 window.addEventListener('keydown', e => {
@@ -1780,7 +1949,7 @@ window.addEventListener('keydown', e => {
     updateThemeUI();
   }
   if (e.key === 'v' || e.key === 'V') changeStyle(1);
-  if (e.key === 'p' || e.key === 'P') spawnPetals(20);
+  if (e.key === 'p' || e.key === 'P') spawnPetals(26);
 });
 
 /* ---------- 界面自动淡出 ---------- */
@@ -1795,8 +1964,10 @@ wakeUI();
 
 /* ---------- 初始化 ---------- */
 $('pcount').textContent = Math.round(pointGeometry.count).toLocaleString('zh-CN');
+budGeometry = generateBudGeometry();     // 生成花苞，初始显示（flowerOpacity = 0）
 updateStyleUI();
 updateThemeUI();
+updateHint();
 
 </script>
 </body>
